@@ -46,7 +46,8 @@ type State interface {
 type Frame struct {
 	frame,
 	frameDelta,
-	frameThresh gocv.Mat
+	frameThresh,
+	frameDebug gocv.Mat
 
 	mog2 gocv.BackgroundSubtractorMOG2
 }
@@ -56,9 +57,20 @@ func NewFrame() *Frame {
 		frame:       gocv.NewMat(),
 		frameDelta:  gocv.NewMat(),
 		frameThresh: gocv.NewMat(),
+		frameDebug:  gocv.NewMat(),
 
 		mog2: gocv.NewBackgroundSubtractorMOG2(),
 	}
+}
+
+func (img *Frame) Close() error {
+	var e multierror.Accumulator
+	e.Push(img.frame.Close())
+	e.Push(img.frameDelta.Close())
+	e.Push(img.frameThresh.Close())
+	e.Push(img.frameDebug.Close())
+	e.Push(img.mog2.Close())
+	return e.Error()
 }
 
 func (img *Frame) FindContours() [][]image.Point {
@@ -75,15 +87,6 @@ func (img *Frame) FindContours() [][]image.Point {
 	gocv.Dilate(img.frameThresh, &img.frameThresh, kernel)
 
 	return gocv.FindContours(img.frameThresh, gocv.RetrievalExternal, gocv.ChainApproxSimple)
-}
-
-func (img *Frame) Close() error {
-	var e multierror.Accumulator
-	e.Push(img.frame.Close())
-	e.Push(img.frameDelta.Close())
-	e.Push(img.frameThresh.Close())
-	e.Push(img.mog2.Close())
-	return e.Error()
 }
 
 type Watching struct {
@@ -138,6 +141,8 @@ func main() {
 			goto readImg
 		}
 
+		img.frame.CopyTo(&img.frameDebug)
+
 		status = "Watching"
 		statusColor = ColorGreen
 
@@ -150,16 +155,16 @@ func main() {
 
 			status = "Recording"
 			statusColor = ColorRed
-			gocv.DrawContours(&img.frame, contours, i, statusColor, 2)
+			gocv.DrawContours(&img.frameDebug, contours, i, statusColor, 2)
 
 			rect := gocv.BoundingRect(c)
-			gocv.Rectangle(&img.frame, rect, ColorBlue, 2)
+			gocv.Rectangle(&img.frameDebug, rect, ColorBlue, 2)
 		}
 
-		gocv.PutText(&img.frame, status, image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, statusColor, 2)
+		gocv.PutText(&img.frameDebug, status, image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, statusColor, 2)
 
 		// TODO: Move to a context
-		window.IMShow(img.frame)
+		window.IMShow(img.frameDebug)
 		if window.WaitKey(1) == ESC_KEY {
 			break
 		}
