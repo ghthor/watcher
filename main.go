@@ -38,6 +38,11 @@ var (
 	ColorBlue  = color.RGBA{0, 0, 255, 0}
 )
 
+// Model Program States
+type State interface {
+	Execute() *State
+}
+
 type Frame struct {
 	frame,
 	frameDelta,
@@ -79,6 +84,18 @@ func (img *Frame) Close() error {
 	e.Push(img.frameThresh.Close())
 	e.Push(img.mog2.Close())
 	return e.Error()
+}
+
+type Watching struct {
+	*Frame
+}
+
+type MotionDetected struct {
+	*Frame
+}
+
+type Recording struct {
+	*Frame
 }
 
 func main() {
