@@ -15,9 +15,11 @@ import (
 	"image"
 	"image/color"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/fluxio/multierror"
+	"github.com/hybridgroup/mjpeg"
 	"gocv.io/x/gocv"
 )
 
@@ -31,6 +33,8 @@ const DefaultHeight = 720
 const MinimumArea = 3000
 
 const DefaultWatchTick = 200 * time.Millisecond
+
+const DefaultHost = "localhost:8088"
 
 var (
 	ColorRed   = color.RGBA{255, 0, 0, 0}
@@ -121,6 +125,16 @@ func main() {
 	img := NewFrame()
 	defer img.Close()
 
+	// create the mjpeg debugStream
+	debugStream := mjpeg.NewStream()
+
+	go func() {
+		fmt.Println("Debug stream to http://" + DefaultHost)
+		// start http server
+		http.Handle("/", debugStream)
+		log.Fatal(http.ListenAndServe(DefaultHost, nil))
+	}()
+
 	status := "Watching"
 	statusColor := ColorGreen
 	watchTick := time.Tick(200 * time.Millisecond)
@@ -164,10 +178,8 @@ func main() {
 		gocv.PutText(&img.frameDebug, status, image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, statusColor, 2)
 
 		// TODO: Move to a context
-		window.IMShow(img.frameDebug)
-		if window.WaitKey(1) == ESC_KEY {
-			break
-		}
+		buf, _ := gocv.IMEncode(".jpg", img.frameDebug)
+		debugStream.UpdateJPEG(buf)
 
 		switch status {
 		case "Recording":
