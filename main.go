@@ -16,6 +16,7 @@ import (
 	"image/color"
 	"log"
 	"net/http"
+	"os/exec"
 	"time"
 
 	"github.com/fluxio/multierror"
@@ -25,14 +26,15 @@ import (
 
 const ESC_KEY = 27
 
-const DefaultDevice = "/dev/video0"
+const DefaultDevice = 0
 const DefaultWidth = 960
 const DefaultHeight = 720
 
 // TODO: Does this need to be a ratio based on image WxH?
 const MinimumArea = 3000
 
-const DefaultWatchTick = 200 * time.Millisecond
+const DefaultWatchCycle = 200 * time.Millisecond
+const DefaultRecordingThreshold = 3 * time.Second
 
 const DefaultHost = "localhost:8088"
 
@@ -41,69 +43,6 @@ var (
 	ColorGreen = color.RGBA{0, 255, 0, 0}
 	ColorBlue  = color.RGBA{0, 0, 255, 0}
 )
-
-// Model Program States
-type State interface {
-	Execute() *State
-}
-
-type Frame struct {
-	frame,
-	frameDelta,
-	frameThresh,
-	frameDebug gocv.Mat
-
-	mog2 gocv.BackgroundSubtractorMOG2
-}
-
-func NewFrame() *Frame {
-	return &Frame{
-		frame:       gocv.NewMat(),
-		frameDelta:  gocv.NewMat(),
-		frameThresh: gocv.NewMat(),
-		frameDebug:  gocv.NewMat(),
-
-		mog2: gocv.NewBackgroundSubtractorMOG2(),
-	}
-}
-
-func (img *Frame) Close() error {
-	var e multierror.Accumulator
-	e.Push(img.frame.Close())
-	e.Push(img.frameDelta.Close())
-	e.Push(img.frameThresh.Close())
-	e.Push(img.frameDebug.Close())
-	e.Push(img.mog2.Close())
-	return e.Error()
-}
-
-func (img *Frame) FindContours() [][]image.Point {
-	// Cleaning up image
-	// Phase 1: obtain foreground only
-	img.mog2.Apply(img.frame, &img.frameDelta)
-
-	// Phase 2: use threshold
-	gocv.Threshold(img.frameDelta, &img.frameThresh, 25, 255, gocv.ThresholdBinary)
-
-	// Phase 3: dilate
-	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(3, 3))
-	defer kernel.Close()
-	gocv.Dilate(img.frameThresh, &img.frameThresh, kernel)
-
-	return gocv.FindContours(img.frameThresh, gocv.RetrievalExternal, gocv.ChainApproxSimple)
-}
-
-type Watching struct {
-	*Frame
-}
-
-type MotionDetected struct {
-	*Frame
-}
-
-type Recording struct {
-	*Frame
-}
 
 func main() {
 	devicePath := DefaultDevice
@@ -118,15 +57,20 @@ func main() {
 	webcam.Set(gocv.VideoCaptureFrameWidth, DefaultWidth)
 	webcam.Set(gocv.VideoCaptureFrameHeight, DefaultHeight)
 	log.Printf("opened %vx%v", webcam.Get(gocv.VideoCaptureFrameHeight), webcam.Get(gocv.VideoCaptureFrameWidth))
-
-	window := gocv.NewWindow("Watcher")
-	defer window.Close()
-
-	img := NewFrame()
-	defer img.Close()
-
-	// create the mjpeg debugStream
 	debugStream := mjpeg.NewStream()
+
+	go func() {
+		<-time.After(500 * time.Millisecond)
+		cmd := exec.Command("open", "http://"+DefaultHost)
+		if err := cmd.Run(); err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	// go func() {
+	// 	<-time.After(20 * time.Second)
+	// 	log.Fatal("demo timeout")
+	// }()
 
 	go func() {
 		fmt.Println("Debug stream to http://" + DefaultHost)
@@ -135,59 +79,108 @@ func main() {
 		log.Fatal(http.ListenAndServe(DefaultHost, nil))
 	}()
 
-	status := "Watching"
-	statusColor := ColorGreen
-	watchTick := time.Tick(200 * time.Millisecond)
+	frame := gocv.NewMat()
+	frameDelta := gocv.NewMat()
+	frameThresh := gocv.NewMat()
+	frameDebug := gocv.NewMat()
+	mog2 := gocv.NewBackgroundSubtractorMOG2()
+	defer func() {
+		var e multierror.Accumulator
+		e.Push(frame.Close())
+		e.Push(frameDelta.Close())
+		e.Push(frameThresh.Close())
+		e.Push(frameDebug.Close())
+		e.Push(mog2.Close())
+		if e.Error() != nil {
+			log.Fatal(e.Error())
+		}
+	}()
+
+	motionDetected := false
+	motionDetectedAt := time.Now()
+	motionFrameCount := 0
+	recording := false
+
+	watchDelay := time.Tick(DefaultWatchCycle)
 
 	fmt.Printf("Start reading camera device: %v\n", devicePath)
 	for {
-		select {
-		case <-watchTick:
-			goto readImg
-		}
-
-	readImg:
-		if ok := webcam.Read(&img.frame); !ok {
+		motionDetected = false
+		if ok := webcam.Read(&frame); !ok {
 			fmt.Printf("Error cannot read device %d\n", devicePath)
-			return
 		}
-		if img.frame.Empty() {
-			goto readImg
+		if frame.Empty() {
+			continue
 		}
 
-		img.frame.CopyTo(&img.frameDebug)
+		frame.CopyTo(&frameDebug)
+		// Cleaning up image
+		// Phase 1: obtain foreground only
+		mog2.Apply(frame, &frameDelta)
+		// Phase 2: use threshold
+		gocv.Threshold(frameDelta, &frameThresh, 25, 255, gocv.ThresholdBinary)
+		// Phase 3: dilate
+		kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(3, 3))
+		gocv.Dilate(frameThresh, &frameThresh, kernel)
 
-		status = "Watching"
-		statusColor = ColorGreen
-
-		contours := img.FindContours()
-		for i, c := range contours {
-			area := gocv.ContourArea(c)
+		shapes := gocv.FindContours(frameThresh, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+		for i, shape := range shapes {
+			area := gocv.ContourArea(shape)
 			if area < MinimumArea {
 				continue
 			}
 
-			status = "Recording"
-			statusColor = ColorRed
-			gocv.DrawContours(&img.frameDebug, contours, i, statusColor, 2)
+			motionDetected = true
+			gocv.DrawContours(&frameDebug, shapes, i, ColorRed, 2)
 
-			rect := gocv.BoundingRect(c)
-			gocv.Rectangle(&img.frameDebug, rect, ColorBlue, 2)
+			rect := gocv.BoundingRect(shape)
+			gocv.Rectangle(&frameDebug, rect, ColorBlue, 2)
 		}
 
-		gocv.PutText(&img.frameDebug, status, image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, statusColor, 2)
+		kernel.Close()
 
-		// TODO: Move to a context
-		buf, _ := gocv.IMEncode(".jpg", img.frameDebug)
+		switch {
+		case !motionDetected:
+			motionDetected = false
+			motionFrameCount = 0
+			recording = false
+		case motionDetected && motionFrameCount == 0:
+			motionDetectedAt = time.Now()
+			fallthrough
+		default:
+			motionFrameCount++
+		}
+
+		recording = motionDetected && time.Now().After(motionDetectedAt.Add(DefaultRecordingThreshold))
+
+		if !motionDetected {
+			gocv.PutText(
+				&frameDebug,
+				fmt.Sprint("Watching"),
+				image.Pt(10, 20),
+				gocv.FontHersheyPlain, 1.2, ColorGreen, 2)
+		} else if motionDetected && !recording {
+			gocv.PutText(
+				&frameDebug,
+				fmt.Sprint("Motion Detected:", motionFrameCount),
+				image.Pt(10, 20),
+				gocv.FontHersheyPlain, 1.2, ColorRed, 2)
+		} else {
+			gocv.PutText(
+				&frameDebug,
+				fmt.Sprint("Recording:", motionFrameCount),
+				image.Pt(10, 20),
+				gocv.FontHersheyPlain, 1.2, ColorRed, 2)
+		}
+
+		buf, _ := gocv.IMEncode(".jpg", frameDebug)
 		debugStream.UpdateJPEG(buf)
 
-		switch status {
-		case "Recording":
-			goto readImg
-		case "Watching":
-			continue
-		default:
-			continue
+		if !motionDetected {
+			select {
+			case <-watchDelay:
+			}
 		}
 	}
+
 }
