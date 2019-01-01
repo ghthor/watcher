@@ -44,19 +44,22 @@ var (
 	ColorBlue  = color.RGBA{0, 0, 255, 0}
 )
 
+var ErrReadDevice = errors.New("error reading device")
+
 func main() {
 	devicePath := DefaultDevice
 
-	webcam, err := gocv.OpenVideoCapture(devicePath)
+	ErrReadDevice = errors.New(fmt.Sprint("error reading device ", devicePath))
+	input, err := gocv.OpenVideoCapture(devicePath)
 	if err != nil {
-		fmt.Printf("Error opening video capture device: %v\n", devicePath)
+		log.Fatalf("Error opening video capture device: %v\n", devicePath)
 		return
 	}
-	defer webcam.Close()
+	defer input.Close()
 
-	webcam.Set(gocv.VideoCaptureFrameWidth, DefaultWidth)
-	webcam.Set(gocv.VideoCaptureFrameHeight, DefaultHeight)
-	log.Printf("opened %vx%v", webcam.Get(gocv.VideoCaptureFrameHeight), webcam.Get(gocv.VideoCaptureFrameWidth))
+	input.Set(gocv.VideoCaptureFrameWidth, DefaultWidth)
+	input.Set(gocv.VideoCaptureFrameHeight, DefaultHeight)
+	log.Printf("opened %vx%v", input.Get(gocv.VideoCaptureFrameHeight), input.Get(gocv.VideoCaptureFrameWidth))
 	debugStream := mjpeg.NewStream()
 
 	go func() {
