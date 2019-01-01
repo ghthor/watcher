@@ -26,6 +26,8 @@ import (
 	"gocv.io/x/gocv"
 )
 
+const FilenameLayout = "2006-01-02-150405-MST"
+
 const ESC_KEY = 27
 
 const DefaultDevice = 0
@@ -142,8 +144,8 @@ func (w *Watcher) FindMotion() bool {
 	return motionDetected
 }
 
-func (w *Watcher) PutDebugText(msg string, msgColor color.RGBA) {
-	gocv.PutText(&w.imgDebug, msg, image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, msgColor, 2)
+func (w *Watcher) PutText(img *gocv.Mat, msg string, msgColor color.RGBA) {
+	gocv.PutText(img, msg, image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, msgColor, 2)
 }
 
 func (w *Watcher) UpdateDebugStream() {
@@ -166,21 +168,29 @@ func (w *Watcher) Watching(ctx context.Context) (WatcherKernel, error) {
 
 		switch {
 		case motionDetected:
-			w.PutDebugText("Motion Detected", ColorRed)
-			w.UpdateDebugStream()
 			return w.MotionDetected, nil
 		default:
 		}
 
-		w.PutDebugText("Watching", ColorGreen)
+		w.PutText(&w.imgDebug, "Watching", ColorGreen)
 		w.UpdateDebugStream()
 		<-readLimiter.C
 	}
 }
 
+func (w *Watcher) BackToWatching(ctx context.Context) (WatcherKernel, error) {
+	w.PutText(&w.imgDebug, "Watching", ColorGreen)
+	w.UpdateDebugStream()
+	return w.Watching, nil
+
+}
+
 func (w *Watcher) MotionDetected(ctx context.Context) (WatcherKernel, error) {
 	motionBegan := time.Now()
 	for {
+		w.PutText(&w.imgDebug, "Motion Detected", ColorRed)
+		w.UpdateDebugStream()
+
 		err := w.Read(ctx)
 		if err != nil {
 			return nil, err
@@ -189,27 +199,42 @@ func (w *Watcher) MotionDetected(ctx context.Context) (WatcherKernel, error) {
 
 		switch {
 		case !motionDetected:
-			w.PutDebugText("Watching", ColorGreen)
-			w.UpdateDebugStream()
-			return w.Watching, nil
+			return w.BackToWatching, nil
 
 		case motionDetected && time.Since(motionBegan) > DefaultRecordingThreshold:
-			w.PutDebugText(time.Now().Format(time.UnixDate), ColorRed)
-			w.UpdateDebugStream()
 			return w.Recording, nil
 
 		default:
+			continue
 		}
-
-		w.PutDebugText("Motion Detected", ColorRed)
-		w.UpdateDebugStream()
 	}
-	return w.MotionDetected, nil
 }
 
 func (w *Watcher) Recording(ctx context.Context) (WatcherKernel, error) {
 	recordingBegan := time.Now()
 	log.Print("Recording Began: ", recordingBegan.Format(time.UnixDate))
+
+	filename := fmt.Sprint(recordingBegan.Format(FilenameLayout), ".mp4")
+	file, err := gocv.VideoWriterFile(filename, "avc1", 25, w.img.Cols(), w.img.Rows(), true)
+	if err != nil {
+		return w.BackToWatching, err
+	}
+	defer func() {
+		go func() {
+			if err := file.Close(); err != nil {
+				log.Print(err)
+			}
+		}()
+	}()
+
+	w.PutText(&w.img, time.Now().Format(time.UnixDate), ColorRed)
+	w.PutText(&w.imgDebug, time.Now().Format(time.UnixDate), ColorRed)
+
+	err = file.Write(w.img)
+	if err != nil {
+		return w.BackToWatching, err
+	}
+	w.UpdateDebugStream()
 
 	for {
 		err := w.Read(ctx)
@@ -219,18 +244,23 @@ func (w *Watcher) Recording(ctx context.Context) (WatcherKernel, error) {
 		motionDetected := w.FindMotion()
 
 		if !motionDetected && time.Since(w.motionDetectedAt) > DefaultRecordingDropoff {
-			w.PutDebugText("Watching", ColorGreen)
-			w.UpdateDebugStream()
-			return w.Watching, nil
+			return w.BackToWatching, nil
 		}
 
 		now := time.Now()
 		msg := fmt.Sprintf("%s %s", now.Format(time.UnixDate), now.Sub(recordingBegan).Round(time.Second))
 
 		if !motionDetected {
-			w.PutDebugText(msg, ColorGreen)
+			w.PutText(&w.img, msg, ColorGreen)
+			w.PutText(&w.imgDebug, msg, ColorGreen)
 		} else {
-			w.PutDebugText(msg, ColorRed)
+			w.PutText(&w.img, msg, ColorRed)
+			w.PutText(&w.imgDebug, msg, ColorRed)
+		}
+
+		err = file.Write(w.img)
+		if err != nil {
+			return w.BackToWatching, err
 		}
 		w.UpdateDebugStream()
 	}
