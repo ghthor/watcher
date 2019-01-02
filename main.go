@@ -106,6 +106,7 @@ func (w *Watcher) Read(ctx context.Context) error {
 }
 
 func (w *Watcher) FindContours() [][]image.Point {
+	// TODO: [+] Quadtree Debug Image with each phase
 	// Cleaning up image
 	// Phase 1: obtain foreground only
 	w.mog2.Apply(w.img, &w.imgDelta)
@@ -144,8 +145,11 @@ func (w *Watcher) FindMotion() bool {
 	return motionDetected
 }
 
-func (w *Watcher) PutText(img *gocv.Mat, msg string, msgColor color.RGBA) {
-	gocv.PutText(img, msg, image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, msgColor, 2)
+func (w *Watcher) PutText(img *gocv.Mat, unixDate string, msg string, msgColor color.RGBA) {
+	gocv.PutText(img, unixDate,
+		image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, msgColor, 2)
+	gocv.PutText(img, msg,
+		image.Pt(10, 50), gocv.FontHersheyPlain, 1.2, msgColor, 2)
 }
 
 func (w *Watcher) UpdateDebugStream() {
@@ -172,14 +176,14 @@ func (w *Watcher) Watching(ctx context.Context) (WatcherKernel, error) {
 		default:
 		}
 
-		w.PutText(&w.imgDebug, "Watching", ColorGreen)
+		w.PutText(&w.imgDebug, time.Now().Format(time.UnixDate), "Watching", ColorGreen)
 		w.UpdateDebugStream()
 		<-readLimiter.C
 	}
 }
 
 func (w *Watcher) BackToWatching(ctx context.Context) (WatcherKernel, error) {
-	w.PutText(&w.imgDebug, "Watching", ColorGreen)
+	w.PutText(&w.imgDebug, time.Now().Format(time.UnixDate), "Watching", ColorGreen)
 	w.UpdateDebugStream()
 	return w.Watching, nil
 
@@ -188,7 +192,7 @@ func (w *Watcher) BackToWatching(ctx context.Context) (WatcherKernel, error) {
 func (w *Watcher) MotionDetected(ctx context.Context) (WatcherKernel, error) {
 	motionBegan := time.Now()
 	for {
-		w.PutText(&w.imgDebug, "Motion Detected", ColorRed)
+		w.PutText(&w.imgDebug, time.Now().Format(time.UnixDate), "Motion Detected", ColorGreen)
 		w.UpdateDebugStream()
 
 		err := w.Read(ctx)
@@ -227,8 +231,11 @@ func (w *Watcher) Recording(ctx context.Context) (WatcherKernel, error) {
 		}()
 	}()
 
-	w.PutText(&w.img, time.Now().Format(time.UnixDate), ColorRed)
-	w.PutText(&w.imgDebug, time.Now().Format(time.UnixDate), ColorRed)
+	now := time.Now().Format(time.UnixDate)
+	w.PutText(&w.img,
+		now, "Recording", ColorRed)
+	w.PutText(&w.imgDebug,
+		now, "Recording", ColorRed)
 
 	err = file.Write(w.img)
 	if err != nil {
@@ -248,14 +255,13 @@ func (w *Watcher) Recording(ctx context.Context) (WatcherKernel, error) {
 		}
 
 		now := time.Now()
-		msg := fmt.Sprintf("%s %s", now.Format(time.UnixDate), now.Sub(recordingBegan).Round(time.Second))
-
+		nowStr := fmt.Sprintf("%s %s", now.Format(time.UnixDate), now.Sub(recordingBegan).Round(time.Second))
 		if !motionDetected {
-			w.PutText(&w.img, msg, ColorGreen)
-			w.PutText(&w.imgDebug, msg, ColorGreen)
+			w.PutText(&w.img, nowStr, "Recording", ColorGreen)
+			w.PutText(&w.imgDebug, nowStr, "Recording", ColorGreen)
 		} else {
-			w.PutText(&w.img, msg, ColorRed)
-			w.PutText(&w.imgDebug, msg, ColorRed)
+			w.PutText(&w.img, nowStr, "Recording", ColorRed)
+			w.PutText(&w.imgDebug, nowStr, "Recording", ColorRed)
 		}
 
 		err = file.Write(w.img)
