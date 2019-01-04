@@ -146,6 +146,7 @@ func (w *Watcher) FindMotion() bool {
 }
 
 func (w *Watcher) PutText(img *gocv.Mat, unixDate string, msg string, msgColor color.RGBA) {
+	//TODO: Calculate FPS
 	gocv.PutText(img, unixDate,
 		image.Pt(10, 20), gocv.FontHersheyPlain, 1.2, msgColor, 2)
 	gocv.PutText(img, msg,
